@@ -1,0 +1,10 @@
+html,body,#app { margin:0; width:100%; height:100%; overflow:hidden; background:#101418; color:#d9e1e8; font-family:system-ui; }
+#hud { position:fixed; top:10px; left:10px; z-index:5; background:#0009; padding:8px; font-size:12px; }
+.panel { position:fixed; z-index:10; background:#1d2630f0; border:1px solid #4d6075; padding:12px; max-height:90vh; overflow:auto; }
+.center { left:50%; top:50%; transform:translate(-50%,-50%); }
+.hidden { display:none; }
+#debug { right:10px; top:10px; width:280px; }
+#inventory { left:10px; bottom:10px; width:320px; }
+button { margin:4px; background:#374657; color:#fff; border:none; padding:6px 9px; cursor:pointer; }
+input[type=range] { width:100%; }
+.slot { border:1px dashed #789; padding:8px; margin:4px 0; background:#0004; }

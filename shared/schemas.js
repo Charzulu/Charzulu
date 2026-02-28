@@ -9,7 +9,8 @@ export const inputSchema = z.object({
   aim: vec3,
   fire: z.boolean(),
   reload: z.boolean(),
-  mountToggle: z.boolean()
+  mountToggle: z.boolean(),
+  action: z.boolean()
 });
 
 export const orderSchema = z.object({

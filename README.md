@@ -1,6 +1,6 @@
 # Iron Silhouettes Prototype
 
-Basic but working local multiplayer-ready prototype with:
+Local multiplayer-ready prototype with:
 - **Client:** Three.js (Vite, ESM)
 - **Server:** Node.js + Express + Socket.IO
 - **Shared:** JSON message schemas validated with zod
@@ -18,8 +18,9 @@ npm run dev
 ## Project structure
 
 - `server/` authoritative fixed-step simulation and networking
-- `shared/` constants + message schemas
+- `shared/` constants, schemas, spread math utility
 - `client/` Three.js renderer, interpolation, UI, controls
+- `client/src/animation/` infantry animation architecture modules (loader/controller/mounting helpers)
 
 ## Controls
 
@@ -43,18 +44,40 @@ npm run dev
 - `R` reload intent
 - `V` mount / dismount nearest mount point
 - `F` loot nearby crate
+- `Space` contextual **Action**
+
+## Infantry contextual Action (Space)
+
+Infantry `Action` is server-authoritative and resolves contextually in this order:
+1. Drop currently dragged downed ally.
+2. Start dragging a nearby downed ally (BattleBit-style dragging).
+3. Open/close nearby door.
+4. Mount nearby vehicle.
+5. Mantle across nearby wall cover.
+
+## Downed / unconscious infantry
+
+Infantry now have incapacitation states:
+- `active`: normal behavior
+- `downed`: cannot act; can be dragged by another infantry (timer ~15s)
+- `unconscious`: after downed bleed-out, remains unconscious (timer ~20s), then removed
+
+Downed/unconscious states are replicated to clients and shown with debug colors:
+- downed: yellow
+- unconscious: gray
 
 ## Game modes
 
 Menu lets you pick:
-- **Test Range:** lanes + enemies around 50/100/200/400m, walls, crate
+- **Test Range:** lanes + enemies around 50/100/200/400m, walls, door, crate
 - **Sandbox:** mostly empty, spawn objects via debug panel
 
 ## Implementation notes
 
 - Server runs authoritative simulation at **20Hz fixed tick** (`TICK_DT = 0.05`).
 - Client renders at browser frame rate and performs **snapshot interpolation** with a 100ms delay buffer.
-- Projectile collision uses per-tick segment progression and simple overlap checks vs entities/walls/ground.
+- Projectile simulation is server-side and uses fixed-step update: `position += velocity * dt`, `velocity += gravity * dt`.
+- Projectile collision checks are simple overlap tests against entities/walls/ground each tick.
 - Penetration model:
   - armor zone from hit direction vs target forward
   - effective thickness = `thickness / max(0.2, cos(angle))`

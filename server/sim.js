@@ -1,11 +1,12 @@
 import { ORDER_TYPES, TEAM, TICK_DT, UNIT_TYPES, MODES } from '../shared/constants.js';
+import { applyConeSpread } from '../shared/spread.js';
 
 let nextEntityId = 1;
 let nextProjectileId = 1;
 const id = (prefix) => `${prefix}-${nextEntityId++}`;
 
 const unitConfigs = {
-  infantry: { hp: 100, speed: 7, radius: 0.5, weapon: 'rifle', range: 90, armor: { front: 12, side: 8, rear: 6, top: 5 } },
+  infantry: { hp: 100, speed: 7, dragSpeed: 3.2, radius: 0.5, weapon: 'rifle', range: 90, armor: { front: 12, side: 8, rear: 6, top: 5 } },
   mech: { hp: 300, speed: 5, radius: 1.2, weapon: 'cannon', range: 180, armor: { front: 55, side: 45, rear: 35, top: 20 } },
   tank: { hp: 500, speed: 4, radius: 1.5, weapon: 'tankGun', range: 240, armor: { front: 90, side: 70, rear: 45, top: 25 } }
 };
@@ -36,6 +37,7 @@ export class Simulation {
     this.explosions = [];
     this.walls = [];
     this.crates = [];
+    this.doors = [];
     this.mode = MODES.TEST_RANGE;
     this.debug = {
       bulletGravity: -9.81,
@@ -54,6 +56,7 @@ export class Simulation {
     this.projectiles.clear();
     this.walls = [];
     this.crates = [];
+    this.doors = [];
     this.mode = mode;
     this.spawnUnit(UNIT_TYPES.MECH, TEAM.PLAYER, vec3(-5, 0, 10));
     this.spawnUnit(UNIT_TYPES.TANK, TEAM.PLAYER, vec3(-1, 0, 10));
@@ -65,6 +68,7 @@ export class Simulation {
       });
       this.spawnWall(vec3(0, 0, -60));
       this.spawnWall(vec3(0, 0, -160));
+      this.spawnDoor(vec3(6, 0, -40));
       this.spawnCrate(vec3(8, 0, 8));
     }
   }
@@ -86,6 +90,11 @@ export class Simulation {
       fireCooldown: 0,
       mountedOn: null,
       mountPoint: null,
+      incapacitated: 'active', // active|downed|unconscious
+      downTimer: 0,
+      unconsciousTimer: 0,
+      draggingTarget: null,
+      draggedBy: null,
       inventory: {
         primary: cfg.weapon,
         ammo: { rifle: 120, cannon: 20, tankGun: 16 },
@@ -101,6 +110,10 @@ export class Simulation {
     this.walls.push({ id: id('wall'), pos: position, hp: 120, size: vec3(4, 2, 0.8) });
   }
 
+  spawnDoor(position) {
+    this.doors.push({ id: id('door'), pos: position, open: false, size: vec3(1.6, 2, 0.3) });
+  }
+
   spawnCrate(position) {
     this.crates.push({ id: id('crate'), pos: position, size: vec3(1, 1, 1), loot: ['grenade', 'medkit', 'rifle_ammo'] });
   }
@@ -114,7 +127,7 @@ export class Simulation {
   applyOrder(order) {
     for (const id of order.unitIds) {
       const unit = this.entities.get(id);
-      if (!unit || unit.team !== TEAM.PLAYER) continue;
+      if (!unit || unit.team !== TEAM.PLAYER || unit.incapacitated !== 'active') continue;
       unit.order = { type: order.type, targetPos: order.targetPos, targetId: order.targetId };
     }
   }
@@ -131,7 +144,7 @@ export class Simulation {
 
   tryLoot(unitId) {
     const unit = this.entities.get(unitId);
-    if (!unit) return;
+    if (!unit || unit.incapacitated !== 'active') return;
     const nearby = this.crates.find((c) => len(sub(c.pos, unit.pos)) < 3);
     if (!nearby) return;
     const empty = unit.inventory.slots.findIndex((s) => !s);
@@ -140,7 +153,7 @@ export class Simulation {
 
   toggleMount(unitId) {
     const infantry = this.entities.get(unitId);
-    if (!infantry || infantry.type !== 'infantry') return;
+    if (!infantry || infantry.type !== 'infantry' || infantry.incapacitated !== 'active') return;
     if (infantry.mountedOn) {
       infantry.mountedOn = null;
       infantry.mountPoint = null;
@@ -153,11 +166,59 @@ export class Simulation {
     infantry.mountPoint = host.mountPoints[0]?.name;
   }
 
+  contextualAction(unitId) {
+    const unit = this.entities.get(unitId);
+    if (!unit || unit.type !== 'infantry' || unit.incapacitated !== 'active') return;
+
+    // If dragging someone, action drops them.
+    if (unit.draggingTarget) {
+      const target = this.entities.get(unit.draggingTarget);
+      if (target) target.draggedBy = null;
+      unit.draggingTarget = null;
+      return;
+    }
+
+    // If near downed ally, start dragging (battlebit-like).
+    const downed = [...this.entities.values()].find((e) => e.type === 'infantry' && e.team === unit.team && e.id !== unit.id && e.incapacitated === 'downed' && !e.draggedBy && len(sub(e.pos, unit.pos)) < 2.5);
+    if (downed) {
+      unit.draggingTarget = downed.id;
+      downed.draggedBy = unit.id;
+      return;
+    }
+
+    // If close to door, toggle open/close.
+    const nearDoor = this.doors.find((d) => len(sub(d.pos, unit.pos)) < 2.4);
+    if (nearDoor) {
+      nearDoor.open = !nearDoor.open;
+      return;
+    }
+
+    // If close to a mountable vehicle, mount.
+    const nearVehicle = [...this.entities.values()].find((e) => e.type !== 'infantry' && len(sub(e.pos, unit.pos)) < 3);
+    if (nearVehicle) {
+      unit.mountedOn = nearVehicle.id;
+      unit.mountPoint = nearVehicle.mountPoints[0]?.name;
+      return;
+    }
+
+    // If near wall, mantle to the opposite side.
+    const nearWall = this.walls.find((w) => Math.abs(unit.pos.x - w.pos.x) < w.size.x / 2 + 0.6 && Math.abs(unit.pos.z - w.pos.z) < w.size.z / 2 + 1.2);
+    if (nearWall) {
+      const dir = norm(sub(unit.pos, nearWall.pos));
+      unit.pos = add(nearWall.pos, mul(dir, 2.2));
+      unit.pos.y = 0;
+    }
+  }
+
   tickStep() {
     this.tick++;
     for (const unit of this.entities.values()) {
+      this.stepUnitState(unit);
       if (unit.hp <= 0) continue;
+
       unit.fireCooldown = Math.max(0, unit.fireCooldown - TICK_DT);
+      if (unit.draggedBy) continue;
+
       if (unit.mountedOn) {
         const host = this.entities.get(unit.mountedOn);
         if (host) {
@@ -167,6 +228,12 @@ export class Simulation {
         }
         continue;
       }
+
+      if (unit.incapacitated !== 'active') {
+        unit.vel = vec3();
+        continue;
+      }
+
       const cfg = unitConfigs[unit.type];
       let desired = vec3();
       if (unit.input) {
@@ -174,9 +241,26 @@ export class Simulation {
         desired.z = -unit.input.move.forward;
         unit.forward = norm(sub(unit.input.aim, unit.pos));
         if (unit.input.mountToggle) this.toggleMount(unit.id);
+        if (unit.input.action) this.contextualAction(unit.id);
         if (unit.input.fire) this.fire(unit, unit.forward);
       }
+
       if (unit.order) this.applyOrderLogic(unit, desired);
+
+      if (unit.draggingTarget) {
+        const target = this.entities.get(unit.draggingTarget);
+        if (target) {
+          const dragSpeed = cfg.dragSpeed ?? cfg.speed;
+          const v = norm(desired);
+          unit.vel = mul(v, dragSpeed);
+          unit.pos = add(unit.pos, mul(unit.vel, TICK_DT));
+          target.pos = add(unit.pos, mul(unit.forward, -0.9));
+          target.pos.y = 0;
+          unit.pos.y = 0;
+          continue;
+        }
+      }
+
       const v = norm(desired);
       unit.vel = mul(v, cfg.speed);
       unit.pos = add(unit.pos, mul(unit.vel, TICK_DT));
@@ -186,30 +270,57 @@ export class Simulation {
     this.cleanup();
   }
 
+  stepUnitState(unit) {
+    if (unit.type !== 'infantry') return;
+    if (unit.incapacitated === 'downed') {
+      unit.downTimer -= TICK_DT;
+      if (unit.downTimer <= 0) {
+        unit.incapacitated = 'unconscious';
+        unit.unconsciousTimer = 20;
+      }
+    } else if (unit.incapacitated === 'unconscious') {
+      unit.unconsciousTimer -= TICK_DT;
+      if (unit.unconsciousTimer <= 0) unit.hp = 0;
+    }
+  }
+
   applyOrderLogic(unit, desired) {
     if (unit.order.type === ORDER_TYPES.MOVE && unit.order.targetPos) {
       const to = sub(unit.order.targetPos, unit.pos);
       if (len(to) < 1) unit.order = null;
-      else Object.assign(desired, to);
+      else Object.assign(desired, this.avoidDoors(unit, to));
     }
     if (unit.order?.type === ORDER_TYPES.ATTACK && unit.order.targetId) {
       const target = this.entities.get(unit.order.targetId);
       if (!target || target.hp <= 0) return;
       const to = sub(target.pos, unit.pos);
       unit.forward = norm(to);
-      if (len(to) > unitConfigs[unit.type].range) Object.assign(desired, to);
+      if (len(to) > unitConfigs[unit.type].range) Object.assign(desired, this.avoidDoors(unit, to));
       else this.fire(unit, unit.forward);
     }
   }
 
+  avoidDoors(unit, desired) {
+    const steer = { ...desired };
+    for (const door of this.doors) {
+      if (door.open) continue;
+      const toDoor = sub(door.pos, unit.pos);
+      if (len(toDoor) < 4) {
+        steer.x += toDoor.z * 0.7;
+        steer.z -= toDoor.x * 0.7;
+      }
+    }
+    return steer;
+  }
+
   fire(unit, dir) {
-    if (unit.fireCooldown > 0) return;
+    if (unit.fireCooldown > 0 || unit.incapacitated !== 'active') return;
     const weapon = weaponConfigs[unit.inventory.primary];
     if (!weapon || unit.inventory.ammo[unit.inventory.primary] <= 0) return;
     unit.inventory.ammo[unit.inventory.primary] -= 1;
     unit.fireCooldown = weapon.cooldown;
     const spread = this.debug.spread * (unit.mountedOn ? 1.8 : 1);
-    const noisy = norm(add(dir, vec3((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread)));
+    const noisy = applyConeSpread(dir, spread);
     const velocity = mul(noisy, this.debug.muzzleVelocity);
     const pid = `p-${nextProjectileId++}`;
     this.projectiles.set(pid, {
@@ -266,9 +377,22 @@ export class Simulation {
     const penetrated = p.penetrationPower >= effective;
     const ricochet = !penetrated && incidence < this.debug.ricochetThreshold && Math.random() < 0.45;
     const damage = penetrated ? p.damage : Math.max(4, p.damage * 0.12);
-    entity.hp -= damage;
+    this.applyDamage(entity, damage);
     if (p.blast > 0) this.spawnExplosion(entity.pos, p);
     this.lastHit = { entity: entity.id, zone, thickness, effectiveThickness: Number(effective.toFixed(2)), penetrationPower: p.penetrationPower, penetrated, ricochet, damage: Number(damage.toFixed(1)) };
+  }
+
+  applyDamage(entity, damage) {
+    entity.hp -= damage;
+    if (entity.type === 'infantry') {
+      if (entity.incapacitated === 'active' && entity.hp <= 0) {
+        entity.incapacitated = 'downed';
+        entity.hp = 20;
+        entity.downTimer = 15;
+      } else if (entity.incapacitated !== 'active') {
+        entity.hp -= damage * 0.35;
+      }
+    }
   }
 
   spawnExplosion(pos, p) {
@@ -278,8 +402,8 @@ export class Simulation {
       const d = len(sub(e.pos, pos));
       if (d > radius) continue;
       const falloff = 1 - d / radius;
-      e.hp -= p.damage * 0.35 * falloff;
-      if (e.type === 'infantry') {
+      this.applyDamage(e, p.damage * 0.35 * falloff);
+      if (e.type === 'infantry' && e.incapacitated === 'active') {
         const push = mul(norm(sub(e.pos, pos)), 10 * falloff);
         e.pos = add(e.pos, push);
       }
@@ -290,7 +414,19 @@ export class Simulation {
     this.walls = this.walls.filter((w) => w.hp > 0);
     this.explosions.forEach((e) => (e.ttl -= TICK_DT));
     this.explosions = this.explosions.filter((e) => e.ttl > 0);
-    for (const e of this.entities.values()) if (e.hp <= 0) this.entities.delete(e.id);
+    for (const e of this.entities.values()) {
+      if (e.hp <= 0) {
+        if (e.draggingTarget) {
+          const t = this.entities.get(e.draggingTarget);
+          if (t) t.draggedBy = null;
+        }
+        if (e.draggedBy) {
+          const d = this.entities.get(e.draggedBy);
+          if (d) d.draggingTarget = null;
+        }
+        this.entities.delete(e.id);
+      }
+    }
   }
 
   snapshot(rttMs = 0) {
@@ -310,6 +446,7 @@ export class Simulation {
       projectiles: [...this.projectiles.values()],
       explosions: this.explosions,
       walls: this.walls,
+      doors: this.doors,
       crates: this.crates
     };
   }

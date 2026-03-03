@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <title>Iron Silhouettes Prototype</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="menu" class="panel center">
+      <h1>Iron Silhouettes Prototype</h1>
+      <button data-mode="test-range">Test Range</button>
+      <button data-mode="sandbox">Sandbox</button>
+    </div>
+    <div id="hud">
+      <div id="modeLabel">Mode: RTS</div>
+      <div id="help">TAB switch, F1 debug, I inventory, F loot, SPACE action</div>
+    </div>
+    <div id="debug" class="panel hidden"></div>
+    <div id="inventory" class="panel hidden"></div>
+    <canvas id="app"></canvas>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

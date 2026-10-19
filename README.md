@@ -1,7 +1,5 @@
 - 👋 Hi, I’m @Charzulu
-- 👀 I’m interested in NFT Video Game Development
-- 🌱 I’m currently learning NFT Video Game Development
-- 💞️ I’m looking to collaborate on NFT Video Game Development
+- 👀 I’m a Game Developer from the 80's
 - 📫 How to reach me Charzuluu@gmail.com
 
 <!---
